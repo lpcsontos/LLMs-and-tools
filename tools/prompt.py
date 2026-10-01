@@ -5,7 +5,7 @@ from tokenizers import Tokenizer
 
 
 
-model = torch.load("../modela/test_gpt_model_v3_ver1.pt", map_location='cuda', weights_only=False)
+model = torch.load("../models/test_gpt_model_v3_ver1.pt", map_location='cuda', weights_only=False)
 
 
 tokenizer = Tokenizer.from_file("../tokenizers/tokenizer.json")
