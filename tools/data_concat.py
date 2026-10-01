@@ -21,15 +21,12 @@ for convo in ds:
 
 random.shuffle(out)
 
-
-out = [{"instruction": f"{i}", "context": "", "response": f"{i}"} for i in range(1, 100001)]
-
 with open("../data/lmsys.jsonl", "w", encoding="utf-8") as f:
     for rec in tqdm(out, desc="Write lmsys.jsonl", unit="rekord"):
         f.write(json.dumps(rec, ensure_ascii=False) + "\n")
 
 
-files = glob.glob("../data/*.jsonl")
+files = [f for f in glob.glob("../data/*.jsonl") if not f.endswith("data.jsonl")]
 recs = []
 for fname in tqdm(files, desc="Read files", unit="file"):
     with open(fname, encoding="utf-8") as f:
