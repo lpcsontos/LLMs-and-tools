@@ -1,29 +1,22 @@
+import sys
 import torch
-import random
-from tokenizers import Tokenizer
 import torch.nn as nn
 from torch.nn import functional as F
 from tokenizers import Tokenizer
 
+import os
 
-tokenizer = Tokenizer.from_file("../tokenizers/tokenizer.json")
-encode = lambda s: tokenizer.encode(s).ids
-decode = lambda ids: tokenizer.decode(ids)
+CHECKPOINT = sys.argv[1] if len(sys.argv) > 1 else "../models/kondi.pt"
+MAX_NEW_TOKENS = 200
 
-load_model = torch.load('../models/model_v3_big.pth', map_location=device)
+TOKENIZER_FOR = {
+    "test_gpt_model_v3_ver1.pt": "../tokenizers/tokenizer.json",
+    "kondi.pt": "../tokenizers/tokenizer_big.json",
+}
+DEFAULT_TOKENIZER = "../tokenizers/tokenizer_big_v2.json"
 
-batch_size = load_model['batch_size']
-block_size = load_model['block_size']
-max_iters = load_model['max_iters']
-eval_interval = load_model['eval_interval']
-learning_rate = load_model['learning_rate']
-device = load_model['device']
-eval_iters = load_model['eval_iters']
-n_embd = load_model['n_embd']
-n_head = load_model['n_head']
-n_layer = load_model['n_layer']
-dropout = load_model['dropout']
-vocab_size = load_model['vocab_size']
+device = 'cuda' if torch.cuda.is_available() else 'cpu'
+
 
 class Head(nn.Module):
     """ one head of self-attention """
@@ -110,7 +103,7 @@ class BLM(nn.Module):
         B, T = idx.shape
 
         tok_emb = self.token_embedding_table(idx) # (B, T, C)
-        pos_emb = self.position_embedding_table(torch.arange(T, device=device)) # (T, C)
+        pos_emb = self.position_embedding_table(torch.arange(T, device=idx.device)) # (T, C)
         x = tok_emb + pos_emb # (B, T, C)
         x = self.blocks(x) # (B, T, C)
         x = self.ln_f(x) # (B, T, C)
@@ -131,21 +124,59 @@ class BLM(nn.Module):
             idx_cond = idx[:, -block_size:]
             logits, loss = self(idx_cond)
             logits = logits[:, -1, :] # becomes (B, C)
-           
+
             probs = F.softmax(logits, dim=-1) # (B, C)
             idx_next = torch.multinomial(probs, num_samples=1) # (B, 1)
             idx = torch.cat((idx, idx_next), dim=1) # (B, T+1)
         return idx
 
+ckpt = torch.load(CHECKPOINT, map_location=device, weights_only=False)
+
+if isinstance(ckpt, nn.Module):
+    model = ckpt
+    vocab_size = model.token_embedding_table.num_embeddings
+    block_size = model.position_embedding_table.num_embeddings
+else:
+    vocab_size = ckpt['vocab_size']
+    block_size = ckpt['block_size']
+    n_embd = ckpt['n_embd']
+    n_head = ckpt['n_head']
+    n_layer = ckpt['n_layer']
+    dropout = ckpt['dropout']
+    model = BLM()
+    model.load_state_dict(ckpt['model_state_dict'])
+
+model.to(device)
+model.eval()
+
+if len(sys.argv) > 2:
+    tokenizer_path = sys.argv[2]
+else:
+    tokenizer_path = TOKENIZER_FOR.get(os.path.basename(CHECKPOINT), DEFAULT_TOKENIZER)
+
+if vocab_size == 65 and len(sys.argv) <= 2:
+    # character-level v2 model: same vocabulary as in model_code/v2.py
+    with open("../data/tiny.txt", encoding="utf-8") as f:
+        chars = sorted(set(f.read()))
+    stoi = {ch: i for i, ch in enumerate(chars)}
+    itos = {i: ch for i, ch in enumerate(chars)}
+    encode = lambda s: [stoi[c] for c in s if c in stoi]
+    decode = lambda ids: "".join(itos[i] for i in ids)
+else:
+    tokenizer = Tokenizer.from_file(tokenizer_path)
+    encode = lambda s: tokenizer.encode(s).ids
+    decode = lambda ids: tokenizer.decode(ids)
+    if tokenizer.get_vocab_size(with_added_tokens=True) != vocab_size:
+        sys.exit(f"{tokenizer_path} has {tokenizer.get_vocab_size(with_added_tokens=True)} tokens, "
+                 f"but the model expects {vocab_size}. Pass the right tokenizer as the second argument.")
 
 
-model = BLM().to(device)
-model = model.load_state_dict(load_model['model_state_dict'])
-
-prompt = input()
-x = torch.tensor([encode(prompt)], dtype=torch.long, device=device)
-
-with torch.no_grad():
-    out = model.generate(x, max_new_tokens=int(len(prompt) * random.randint(1, 21) * 0.1))
-
-print("→ gen text:", decode(out[0].tolist()))
+print(f"Loaded {CHECKPOINT} on {device}. Type a prompt (empty line to quit).")
+while True:
+    prompt = input("> ")
+    if not prompt:
+        break
+    x = torch.tensor([encode(prompt)], dtype=torch.long, device=device)
+    with torch.no_grad():
+        out = model.generate(x, max_new_tokens=MAX_NEW_TOKENS)
+    print("→ gen text:", decode(out[0].tolist()))
